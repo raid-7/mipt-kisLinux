@@ -8,3 +8,8 @@ OBJ = fs.o main.o manage.o myutil.o
 
 rfs: $(OBJ)
 	$(CC) -o $@ $^ $(CFLAGS)
+
+.PHONY: clean
+clean:
+	rm *.o
+

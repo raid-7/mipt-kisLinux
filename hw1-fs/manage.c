@@ -15,6 +15,11 @@ void* open_and_map(const char* filename, size_t size) {
 	die("Error occurd while opening file");
 	if (size) {
 		ftruncate(fd, size);
+	} else {
+		struct stat statbuf;
+		fstat(fd, &statbuf);
+		die("Error occurd while opening file");
+		size = statbuf.st_size;
 	}
 	die("Error occurd while preparing file");
 	void* container = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -27,6 +32,7 @@ void* open_and_map(const char* filename, size_t size) {
 void mark_block_in_lookup_table(FsDescriptors fs, const size_t block_index, char occupied) {
 	size_t byte_index = block_index / 8;
 	size_t bit_index = block_index % 8;
+
 	if (block_index >= fs.superblock->blocks_count)
 		die_fatal("Internal error");
 	if (occupied)
@@ -42,15 +48,20 @@ size_t get_next_free_block_index(FsDescriptors fs) {
 		if (~cur_byte == 0)
 			continue;
 		for (size_t k = 0; k < 8; ++k) {
-			if (cur_byte & (1 << k))
+			if (!(cur_byte & (1 << k))) {
 				return i * 8 + k;
+			}
 		}
 	}
 	die_fatal("No space");
 }
 
-FsDescriptors prepare_descriptors(void* container) {
+FsDescriptors prepare_descriptors(void* container, char clean_lookup_table) {
 	Superblock* sblock = (Superblock*) container;
+
+	if (!is_platform_compatible(sblock->portability_control))
+		die_fatal("The filesystem is incompatible with your platfrom");
+
 	size_t lookup_table_size = (sblock->blocks_count + 7) / 8;
 	size_t metadata_size = sizeof(Superblock) + lookup_table_size;
 	size_t metadata_pages_count = (metadata_size + sblock->block_size - 1) / sblock->block_size;
@@ -59,13 +70,15 @@ FsDescriptors prepare_descriptors(void* container) {
 		container,
 		sblock,
 		(unsigned char*) (container + sizeof(Superblock)),
-		metadata_pages_count * sblock->block_size
+		metadata_pages_count
 	};
 
-	memset(res.lookup_table, 0, lookup_table_size);
+	if (clean_lookup_table) {
+		memset(res.lookup_table, 0, lookup_table_size);
 
-	for (size_t i = 0; i < metadata_pages_count; ++i)
-		mark_block_in_lookup_table(res, i, 1);
+		for (size_t i = 0; i < metadata_pages_count; ++i)
+			mark_block_in_lookup_table(res, i, 1);	
+	}
 
 	return res;
 }
@@ -81,17 +94,19 @@ FsDescriptors init_fs(const char* filename, size_t size) {
 	Superblock* superblock = (Superblock*) container;
 	superblock->block_size = page_size;
 	superblock->blocks_count = pages_count;
+	superblock->portability_control = get_platform_values();
 
-	FsDescriptors fs = prepare_descriptors(container);
-	size_t root_inode = init_new_file(fs);
-	if (root_inode != fs.root_inode)
+	FsDescriptors fs = prepare_descriptors(container, 1);
+	size_t root_inode = init_new_file(fs, FLG_DIRECTORY);
+	if (root_inode != fs.root_inode) {
 		die_fatal("Internal error");
+	}
 	return fs;
 }
 
 FsDescriptors open_fs(const char* filename) {
 	void* container = open_and_map(filename, 0);
-	return prepare_descriptors(container);
+	return prepare_descriptors(container, 0);
 }
 
 void close_fs(FsDescriptors fs) {
@@ -99,7 +114,7 @@ void close_fs(FsDescriptors fs) {
 	die("Error occured while saving data");
 }
 
-size_t init_new_file(FsDescriptors fs) {
+size_t init_new_file(FsDescriptors fs, const unsigned char flags) {
 	size_t block_index = get_next_free_block_index(fs);
 	mark_block_in_lookup_table(fs, block_index, 1);
 	void* block = fs.container + block_index * fs.superblock->block_size;
@@ -108,6 +123,7 @@ size_t init_new_file(FsDescriptors fs) {
 	inode->node.continuation_inode = 0;
 	inode->links_count = 0;
 	inode->last_inode = block_index;
+	inode->flags = flags;
 	return block_index;
 }
 
@@ -186,14 +202,15 @@ size_t read_file(FsDescriptors fs, size_t block_index, size_t offset, size_t len
 	
 	const size_t first_block_size = fs.superblock->block_size - sizeof(INodeMain);
 	const size_t common_block_size = fs.superblock->block_size - sizeof(INode);
-	size_t current_read_offset = sizeof(INodeMain);
+	size_t block_inode_offset = sizeof(INodeMain);
 	INode* current_inode = (INode*) inode;
 
+// TODO rewrite this block <<
 	if (offset > first_block_size) {
 		offset -= first_block_size;
 		block_index = current_inode->continuation_inode;
 		current_inode = get_next_inode(fs, current_inode);
-		current_read_offset = sizeof(INode);
+		block_inode_offset = sizeof(INode);
 	}
 
 	while (offset > common_block_size) {
@@ -201,16 +218,18 @@ size_t read_file(FsDescriptors fs, size_t block_index, size_t offset, size_t len
 		block_index = current_inode->continuation_inode;
 		current_inode = get_next_inode(fs, current_inode);	
 	}
+// >>
 
-	while (length) {
-		const size_t copy_len = MIN(common_block_size, length);
-		memcpy(buffer, fs.container + block_index * fs.superblock->block_size + offset + current_read_offset, copy_len);
+	size_t len = length;
+	while (len) {
+		const size_t copy_len = MIN(common_block_size, len);
+		memcpy(buffer, fs.container + block_index * fs.superblock->block_size + offset + block_inode_offset, copy_len);
 
-		current_read_offset = sizeof(INode);
+		block_inode_offset = sizeof(INode);
 		offset = 0;
-		length -= copy_len;
+		len -= copy_len;
 
-		if (length) {
+		if (len) {
 			block_index = current_inode->continuation_inode;
 			current_inode = get_next_inode(fs, current_inode);	
 		}
@@ -224,7 +243,7 @@ size_t read_entire_file(FsDescriptors fs, size_t block_index, void* buffer) {
 	return read_file(fs, block_index, 0, inode->size, buffer);
 }
 
-void write_file(FsDescriptors fs, size_t block_index, size_t offset, size_t length, void* buffer) {
+void write_file_unchecked(FsDescriptors fs, size_t block_index, size_t offset, size_t length, void* buffer) {
 	if (!length)
 		return;
 
@@ -238,11 +257,62 @@ void write_file(FsDescriptors fs, size_t block_index, size_t offset, size_t leng
 	
 	const size_t first_block_size = fs.superblock->block_size - sizeof(INodeMain);
 	const size_t common_block_size = fs.superblock->block_size - sizeof(INode);
-	// TODO
+
+	size_t block_inode_offset = sizeof(INodeMain);
+	INode* current_inode = (INode*) inode;
+
+// TODO rewrite this block <<
+	if (offset > first_block_size) {
+		offset -= first_block_size;
+		block_index = current_inode->continuation_inode;
+		current_inode = get_next_inode(fs, current_inode);
+		block_inode_offset = sizeof(INode);
+	}
+
+	while (offset > common_block_size) {
+		offset -= common_block_size;
+		block_index = current_inode->continuation_inode;
+		current_inode = get_next_inode(fs, current_inode);	
+	}
+// >>
+
+	while (length) {
+		const size_t copy_len = MIN(common_block_size, length);
+		memcpy(fs.container + block_index * fs.superblock->block_size + offset + block_inode_offset, buffer, copy_len);
+
+		block_inode_offset = sizeof(INode);
+		offset = 0;
+		length -= copy_len;
+
+		if (length) {
+			block_index = current_inode->continuation_inode;
+			current_inode = get_next_inode(fs, current_inode);	
+		}
+	}
 }
 
-Directory read_directory(FsDescriptors fs, size_t dir_block_index) {
+void write_file(FsDescriptors fs, size_t block_index, size_t offset, size_t length, void* buffer) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, block_index);
+	if (!(inode->flags & FLG_FILE))
+		die_fatal("It is not file");
+	write_file_unchecked(fs, block_index, offset, length, buffer);
+}
+
+void append_file_unchecked(FsDescriptors fs, size_t block_index, size_t length, void* buffer) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, block_index);
+	write_file_unchecked(fs, block_index, inode->size, length, buffer);
+}
+
+void append_file(FsDescriptors fs, size_t block_index, size_t length, void* buffer) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, block_index);
+	write_file(fs, block_index, inode->size, length, buffer);
+}
+
+DirectoryContent read_directory(FsDescriptors fs, size_t dir_block_index) {
 	INodeMain* inode = (INodeMain*) get_inode(fs, dir_block_index);
+	if (!(inode->flags & FLG_DIRECTORY))
+		die_fatal("It is not directory");
+
 	const size_t cur_dir_size = inode->size;
 	if (cur_dir_size % sizeof(DirectoryItem))
 		die_fatal("Internal error");
@@ -250,6 +320,52 @@ Directory read_directory(FsDescriptors fs, size_t dir_block_index) {
 	void* buffer = malloc(cur_dir_size);
 	read_file(fs, dir_block_index, 0, cur_dir_size, buffer);
 
-	Directory res = {cur_dir_size / sizeof(DirectoryItem), (DirectoryItem*) buffer};
-	return res;
+	return (DirectoryContent) {
+		cur_dir_size / sizeof(DirectoryItem),
+		(DirectoryItem*) buffer
+	};
+}
+
+void free_directory(DirectoryContent dir) {
+	free(dir.items);
+}
+
+void append_directory(FsDescriptors fs, size_t dir_block_index, DirectoryItem item) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, dir_block_index);
+	if (!(inode->flags & FLG_DIRECTORY))
+		die_fatal("It is not directory");
+	append_file_unchecked(fs, dir_block_index, sizeof(DirectoryItem), &item);
+}
+
+size_t find_directory_item(DirectoryContent content, const char* name) {
+	for (size_t i = 0; i < content.items_count; ++i) {
+		if (strcmp(name, content.items[i].name) == 0)
+			return i;
+	}
+	die_fatal("No such file or directory");
+}
+
+size_t locate_path(FsDescriptors fs, Path path) {
+	size_t next_inode = fs.root_inode;
+	for (size_t i = 0; i < path.count; ++i) {
+		DirectoryContent root = read_directory(fs, next_inode);
+		size_t item_index = find_directory_item(root, path.parts[i]);
+		DirectoryItem item = root.items[item_index];
+		next_inode = item.inode;
+		free_directory(root);
+	}
+	return next_inode;
+}
+
+size_t remove_from_directory(FsDescriptors fs, size_t dir_block_index, const char* name) {
+	DirectoryContent root = read_directory(fs, dir_block_index);
+	size_t item_index = find_directory_item(root, name);
+
+	truncate_file(fs, dir_block_index, 0);
+	for (size_t i = 0; i < root.items_count; ++i)
+		if (i != item_index)
+			append_directory(fs, dir_block_index, root.items[i]);
+
+	free_directory(root);
+	return item_index;
 }
