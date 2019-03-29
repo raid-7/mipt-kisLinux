@@ -12,11 +12,11 @@ Commands with arguments: \n
   init <size> \n
   ls <path> \n
   cat <path> \n
-  *stat <path> \n
+  stat <path> \n
   mkdir <path> \n
   mkfile <path> \n
   write <path> [offset] \n
-  *rm <path> \n
+  rm <path> \n
 );
 
 void die_with_help() {
@@ -50,6 +50,9 @@ void perform_write(FsDescriptors fs, const char* s_path, size_t offset) {
 		}
 
 		write_file(fs, inode, offset, read_bytes, buffer);
+		for (size_t i = 0; i < read_bytes; ++i)
+			if (!((char*)buffer)[i])
+				printf("%lu\n", read_bytes);
 		offset += read_bytes;
 	}
 
@@ -170,6 +173,25 @@ int main(int argc, const char* argv[]) {
 		size_t file_inode = remove_from_directory(fs, dir_inode, name);
 		purge_file(fs, file_inode);
 
+		free_path(path);
+		close_fs(fs);
+	});
+
+	CMD(stat, 1, {
+		FsDescriptors fs = open_fs(filename);
+		Path path = split_path(args[0]);
+
+		size_t inode = locate_path(fs, path);
+		size_t size = get_file_size(fs, inode);
+		size_t blocks = get_blocks_required(fs, size);
+
+		printf("%lu bytes, %lu blocks\n", size, blocks);
+		const size_t* trace = trace_file_blocks(fs, inode);
+		for (size_t i = 0; i < blocks; ++i)
+			printf("%lu ", trace[i]);
+		printf("\n");
+
+		free((void*) trace);
 		free_path(path);
 		close_fs(fs);
 	});

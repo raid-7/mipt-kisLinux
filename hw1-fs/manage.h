@@ -34,3 +34,6 @@ void free_directory(DirectoryContent);
 size_t locate_path(FsDescriptors, Path);
 void append_directory(FsDescriptors, size_t, DirectoryItem);
 size_t remove_from_directory(FsDescriptors fs, size_t, const char*);
+size_t get_blocks_required(FsDescriptors, size_t);
+size_t get_file_size(FsDescriptors, size_t);
+const size_t* trace_file_blocks(FsDescriptors, size_t);

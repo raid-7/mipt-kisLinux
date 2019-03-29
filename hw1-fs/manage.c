@@ -15,13 +15,13 @@ void* open_and_map(const char* filename, size_t size) {
 	die("Error occurd while opening file");
 	if (size) {
 		ftruncate(fd, size);
+		die("Error occurd while preparing file");
 	} else {
 		struct stat statbuf;
 		fstat(fd, &statbuf);
 		die("Error occurd while opening file");
 		size = statbuf.st_size;
 	}
-	die("Error occurd while preparing file");
 	void* container = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	die("Error occurd while opening file");
 	close(fd);
@@ -141,13 +141,26 @@ INode* get_next_inode(FsDescriptors fs, INode* inode) {
 	return get_inode(fs, inode->continuation_inode);
 }
 
-void purge_file(FsDescriptors fs, size_t block_index) {
+void purge_blocks(FsDescriptors fs, size_t block_index) {
 	INode* inode = get_inode(fs, block_index);
 	while (inode) {
 		mark_block_in_lookup_table(fs, block_index, 0);
 		block_index = inode->continuation_inode;
 		inode = get_next_inode(fs, inode);
 	}
+}
+
+void purge_file(FsDescriptors fs, size_t block_index) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, block_index);
+	if (inode->flags & FLG_DIRECTORY) {
+		DirectoryContent content = read_directory(fs, block_index);
+		for (size_t i = 0; i < content.items_count; ++i) {
+			purge_file(fs, content.items[i].inode);
+		}
+		free_directory(content);
+	}
+
+	purge_blocks(fs, block_index);
 }
 
 size_t get_blocks_required(FsDescriptors fs, size_t size) {
@@ -181,9 +194,12 @@ void truncate_file(FsDescriptors fs, size_t block_index, size_t new_size) {
 	} else if (new_blocks_required < old_blocks_required) {
 		// shrink
 		INode* current_inode = (INode*) inode;
-		for (size_t i = 1; i < new_blocks_required; ++i)
+		for (size_t i = 1; i < new_blocks_required; ++i) {
+			block_index = current_inode->continuation_inode;
 			current_inode = get_next_inode(fs, current_inode);
-		purge_file(fs, current_inode->continuation_inode);
+		}
+		purge_blocks(fs, current_inode->continuation_inode);
+		inode->last_inode = block_index;
 	}
 }
 
@@ -222,12 +238,15 @@ size_t read_file(FsDescriptors fs, size_t block_index, size_t offset, size_t len
 
 	size_t len = length;
 	while (len) {
-		const size_t copy_len = MIN(common_block_size, len);
+		const size_t available_len = fs.superblock->block_size - block_inode_offset - offset;
+		const size_t copy_len = MIN(available_len, len);
+
 		memcpy(buffer, fs.container + block_index * fs.superblock->block_size + offset + block_inode_offset, copy_len);
 
 		block_inode_offset = sizeof(INode);
 		offset = 0;
 		len -= copy_len;
+		buffer += copy_len;
 
 		if (len) {
 			block_index = current_inode->continuation_inode;
@@ -277,16 +296,19 @@ void write_file_unchecked(FsDescriptors fs, size_t block_index, size_t offset, s
 // >>
 
 	while (length) {
-		const size_t copy_len = MIN(common_block_size, length);
+		const size_t available_len = fs.superblock->block_size - block_inode_offset - offset;
+		const size_t copy_len = MIN(available_len, length);
+
 		memcpy(fs.container + block_index * fs.superblock->block_size + offset + block_inode_offset, buffer, copy_len);
 
 		block_inode_offset = sizeof(INode);
 		offset = 0;
 		length -= copy_len;
+		buffer += copy_len;
 
 		if (length) {
 			block_index = current_inode->continuation_inode;
-			current_inode = get_next_inode(fs, current_inode);	
+			current_inode = get_next_inode(fs, current_inode);
 		}
 	}
 }
@@ -368,4 +390,22 @@ size_t remove_from_directory(FsDescriptors fs, size_t dir_block_index, const cha
 
 	free_directory(root);
 	return item_index;
+}
+
+size_t get_file_size(FsDescriptors fs, size_t block_index) {
+	INodeMain* inode = (INodeMain*) get_inode(fs, block_index);
+	return inode->size;
+}
+
+const size_t* trace_file_blocks(FsDescriptors fs, size_t block_index) {
+	INode* inode = get_inode(fs, block_index);
+	size_t count = get_blocks_required(fs, ((INodeMain*) inode)->size);
+	size_t* res = calloc(count, sizeof(size_t));
+	size_t* p = res;
+	*(p++) = block_index;
+	do {
+		*(p++) = inode->continuation_inode;
+		inode = get_next_inode(fs, inode);
+	} while (--count);
+	return res;
 }

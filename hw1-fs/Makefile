@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-I. -g
+CFLAGS=-I. -O0 -g
 DEPS = fs.h manage.h myutil.h
 OBJ = fs.o main.o manage.o myutil.o
 
@@ -11,5 +11,4 @@ rfs: $(OBJ)
 
 .PHONY: clean
 clean:
-	rm *.o
-
+	rm -f rfs *.o
