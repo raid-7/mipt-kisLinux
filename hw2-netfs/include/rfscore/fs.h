@@ -4,6 +4,8 @@
 
 #define FILE_NAME_LENGTH 256
 
+#pragma pack(push, 1)
+
 typedef struct INode {
 	size_t continuation_inode;
 } INode;
@@ -34,6 +36,8 @@ typedef struct Superblock {
 	size_t blocks_count;
 	PortabilityControlValues portability_control;
 } Superblock;
+
+#pragma pack(pop)
 
 char is_platform_compatible(PortabilityControlValues);
 PortabilityControlValues get_platform_values();

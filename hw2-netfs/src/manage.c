@@ -12,18 +12,18 @@
 
 void* open_and_map(const char* filename, size_t size) {
 	int fd = open(filename, O_RDWR | (size ? O_CREAT : 0), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-	die("Error occurd while opening file");
+	die("Error occurred while opening file");
 	if (size) {
 		ftruncate(fd, size);
-		die("Error occurd while preparing file");
+		die("Error occurred while preparing file");
 	} else {
 		struct stat statbuf;
 		fstat(fd, &statbuf);
-		die("Error occurd while opening file");
+		die("Error occurred while opening file");
 		size = statbuf.st_size;
 	}
 	void* container = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	die("Error occurd while opening file");
+	die("Error occurred while opening file");
 	close(fd);
 	die("Internal error");
 	return container;
@@ -397,7 +397,7 @@ size_t get_file_size(FsDescriptors fs, size_t block_index) {
 	return inode->size;
 }
 
-const size_t* trace_file_blocks(FsDescriptors fs, size_t block_index) {
+size_t* trace_file_blocks(FsDescriptors fs, size_t block_index) {
 	INode* inode = get_inode(fs, block_index);
 	size_t count = get_blocks_required(fs, ((INodeMain*) inode)->size);
 	size_t* res = calloc(count, sizeof(size_t));

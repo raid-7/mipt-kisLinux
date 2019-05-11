@@ -1,0 +1,17 @@
+#pragma once
+
+//!preproc:set:FSOP_list Read Write Create Remove Stat ReadDir
+//!preproc:transform:FSOP_list:FSOP_list_enum prefix(FSOP_)
+//!preproc:transform:FSOP_list:FSOP_list_conditions substitute`if((op)->type==FSOP_#){fsop_#((fd),&(op)->#_args,(sockd));}`
+//!preproc:transform:FSOP_list:FSOP_list_destructors substitute`if((op)->type==FSOP_#){free_string((op)->#_args.path);}`
+
+#define _FSOP_list //!preproc:get:FSOP_list_enum iterate(,)
+#define _FSOP_funcs //!preproc:get:FSOP_list substitute`void fsop_#(FsDescriptors,FsOp#_args*,int)`
+#define _FSOP_args //!preproc:get:FSOP_list substitute(FsOp#_args #_args)
+#define _FSOP_calls(op, fd, sockd) //!preproc:get:FSOP_list_conditions iterate(;)
+
+#define _FSOP_readers //!preproc:get:FSOP_list substitute`if (value->type == FSOP_#) {slz_FsOp#_read(fd, &value->#_args);}`
+#define _FSOP_writers //!preproc:get:FSOP_list substitute`if (value->type == FSOP_#) {slz_FsOp#_write(fd, &value->#_args);}`
+#define _FSOP_default_serializers //!preproc:get:FSOP_list substitute`_SLZ_SERIALIZER(FsOp#_args, slz_FsOp#, die)`
+#define _FSOP_serializer_definitions //!preproc:get:FSOP_list substitute`_SLZ_SERIALIZER_DEF(FsOp#_args, slz_FsOp#)`
+#define _FSOP_clear(op) //!preproc:get:FSOP_list_destructors iterate(;)

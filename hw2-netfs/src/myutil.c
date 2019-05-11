@@ -3,17 +3,47 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
+#include <syslog.h>
+
+void (*global_interceptor) (const char* );
 
 void die(const char* string) {
 	if (errno) {
-		perror(string);
-		exit(1);
+		syslog(LOG_ERR, "%s: %m", string);
+		if (global_interceptor) {
+		    const char* err_str = strerror(errno);
+		    size_t len = strlen(err_str) + strlen(string) + 2;
+		    char* full_str = malloc(len);
+		    if (!full_str)
+		        exit(1);
+		    sprintf(full_str, "%s: %s", string, err_str);
+		    global_interceptor(full_str);
+		    free(full_str);
+		} else
+		    exit(1);
 	}
 }
 
 void die_fatal(const char* string) {
-	fprintf(stderr, "%s\n", string);
-	exit(1);
+	syslog(LOG_ERR, "%s\n", string);
+	if (global_interceptor) {
+	    global_interceptor(string);
+	} else
+	    exit(1);
+}
+
+char warn(const char* string) {
+    if (errno) {
+        syslog(LOG_WARNING, "%s: %m", string);
+        errno = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void intercept_errors(void (*interceptor) (const char* )) {
+    global_interceptor = interceptor;
 }
 
 size_t get_page_size() {
@@ -58,4 +88,18 @@ Path split_path(const char* path) {
 void free_path(Path path) {
 	free((void*) path.parts);
 	free((void*) path.line);
+}
+
+
+void free_string(String s) {
+    free(s.string);
+}
+
+String to_string(const char* s) {
+    String res;
+    res.length = strlen(s) + 1;
+    res.string = malloc(res.length);
+    die("Memory allocation failed");
+    memcpy(res.string, s, res.length);
+    return res;
 }
