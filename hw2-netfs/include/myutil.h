@@ -16,6 +16,7 @@ void die_fatal(const char*);
 size_t get_page_size();
 
 void intercept_errors(void (*interceptor) (const char*));
+void configure_error_logging(char to_stderr, char to_syslog);
 
 #define STRING(...) #__VA_ARGS__
 

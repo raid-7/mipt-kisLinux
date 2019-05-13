@@ -6,10 +6,11 @@
 #include <rfsnet/net.h>
 #include <myutil.h>
 #include <operation_defines.h>
+#include <errno.h>
 
 
 const char* HELP_STRING = STRING(
-Usage: ./rfs <path_to_fs> <command> <arguments> \n\n\
+Usage: ./rfs <address> <command> <arguments> \n\n\
 Commands with arguments: \n
   init <size> \n
   ls <path> \n
@@ -52,27 +53,59 @@ void read_error(int sockd) {
     free_string(err);
 }
 
-void perform_write(FsDescriptors fs, const char* s_path, size_t offset) {
-	Path path = split_path(s_path);
-	const size_t inode = locate_path(fs, path);
+void perform_write(int sockd, const char* s_path, size_t offset) {
+    NetFsOperation op;
+    op.type = FSOP_Write;
+    op.Write_args.path = to_string(s_path);
+
 	const size_t buf_size = 1024*1024*2;
 	void* buffer = malloc(buf_size);
+    op.Write_args.data = buffer;
 
 	while (!feof(stdin)) {
 		size_t read_bytes = fread(buffer, 1, buf_size, stdin);
 		if (ferror(stdin)) {
-			die_fatal("Error occured while reading from input stream");
+			die_fatal("Error occurred while reading from input stream");
 		}
 
-		write_file(fs, inode, offset, read_bytes, buffer);
-		for (size_t i = 0; i < read_bytes; ++i)
-			if (!((char*)buffer)[i])
-				printf("%lu\n", read_bytes);
+        op.Write_args.offset = offset;
+        op.Write_args.length = read_bytes;
+		if (!slz_NetFsOperation_write(sockd, &op)) {
+            die_fatal("Connection problems");
+		}
+		read_error(sockd);
+
 		offset += read_bytes;
 	}
 
 	free(buffer);
-	free_path(path);
+	free_string(op.Write_args.path);
+}
+
+size_t perform_read(int sockd, const char* path, size_t offset, size_t length, char* buffer) {
+    NetFsOperation op;
+    op.type = FSOP_Read;
+    op.Read_args.path = to_string(path);
+    op.Read_args.length = length;
+    op.Read_args.offset = offset;
+
+    if (!slz_NetFsOperation_write(sockd, &op)) {
+        die_fatal("Connection problems");
+    }
+
+    free_string(op.Read_args.path);
+
+    read_error(sockd);
+
+    String response;
+    if (!slz_String_read(sockd, &response)) {
+        die_fatal("Connection problems");
+    }
+
+    memcpy(buffer, response.string, response.length);
+    size_t real_len = response.length;
+    free_string(response);
+    return real_len;
 }
 
 void make_item(int sockd, const char* s_path, unsigned char flags) {
@@ -89,6 +122,8 @@ void make_item(int sockd, const char* s_path, unsigned char flags) {
 }
 
 int main(int argc, const char* argv[]) {
+    configure_error_logging(1, 0);
+
 	CMD(mkfile, 1, {
 		int sockd = initialize_client(address);
 		make_item(sockd, args[0], FLG_FILE);
@@ -124,47 +159,44 @@ int main(int argc, const char* argv[]) {
         destroy_client(sockd);
 	});
 
-//	CMD(cat, 1, {
-//		Path path = split_path(args[0]);
-//        int sockd = initialize_client(address);
+	CMD(cat, 1, {
+        int sockd = initialize_client(address);
+
+		const size_t buf_size = 1024*1024*2;
+		void* buffer = malloc(buf_size);
+		size_t read_bytes;
+		size_t total_read_bytes = 0;
+
+		while (read_bytes = perform_read(sockd, args[0], total_read_bytes, buf_size, buffer)) {
+			fwrite(buffer, 1, read_bytes, stdout);
+			total_read_bytes += read_bytes;
+		}
+
+		free(buffer);
+		destroy_client(sockd);
+	});
+
+	CMD(write, 1, {
+        int sockd = initialize_client(address);
+
+		perform_write(sockd, args[0], 0);
+
+		destroy_client(sockd);
+	});
 //
-//		size_t inode = locate_path(fs, path);
-//
-//		const size_t buf_size = 1024*1024*2;
-//		void* buffer = malloc(buf_size);
-//		size_t read_bytes;
-//		size_t total_read_bytes = 0;
-//		while (read_bytes = read_file(fs, inode, total_read_bytes, buf_size, buffer)) {
-//			fwrite(buffer, 1, read_bytes, stdout);
-//			total_read_bytes += read_bytes;
-//		}
-//
-//		free(buffer);
-//		destroy_client(sockd);
-//		free_path(path);
-//	});
-//
-//	CMD(write, 1, {
-//        int sockd = initialize_client(address);
-//
-//		perform_write(fs, args[0], 0);
-//
-//		destroy_client(sockd);
-//	});
-//
-//	CMD(write, 2, {
-//		unsigned long long offset;
-//		if (!sscanf(args[1], "%llu", &offset)) {
-//			die_fatal("Invalid argument");
-//		}
-//		die("Internal error");
-//
-//        int sockd = initialize_client(address);
-//
-//		perform_write(fs, args[0], (size_t) offset);
-//
-//		destroy_client(sockd);
-//	});
+	CMD(write, 2, {
+		unsigned long long offset;
+		if (!sscanf(args[1], "%llu", &offset)) {
+			die_fatal("Invalid argument");
+		}
+		die("Internal error");
+
+        int sockd = initialize_client(address);
+
+		perform_write(sockd, args[0], (size_t) offset);
+
+		destroy_client(sockd);
+	});
 
 	CMD(rm, 1, {
         NetFsOperation op;
@@ -189,6 +221,7 @@ int main(int argc, const char* argv[]) {
         if (!slz_NetFsOperation_write(sockd, &op))
             die_fatal("Connection problems");
 
+        read_error(sockd);
         FsOpStat_response response;
         if (!slz_FsOpStatResponse_read(sockd, &response)) {
             die_fatal("Connection problems");

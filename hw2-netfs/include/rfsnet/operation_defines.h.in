@@ -14,4 +14,7 @@
 #define _FSOP_writers //!preproc:get:FSOP_list substitute`if (value->type == FSOP_#) {slz_FsOp#_write(fd, &value->#_args);}`
 #define _FSOP_default_serializers //!preproc:get:FSOP_list substitute`_SLZ_SERIALIZER(FsOp#_args, slz_FsOp#, die)`
 #define _FSOP_serializer_definitions //!preproc:get:FSOP_list substitute`_SLZ_SERIALIZER_DEF(FsOp#_args, slz_FsOp#)`
-#define _FSOP_clear(op) //!preproc:get:FSOP_list_destructors iterate(;)
+#define _FSOP_clear(op) \
+    if ((op)->type == FSOP_Write)\
+        free((op)->Write_args.data);\
+    //!preproc:get:FSOP_list_destructors iterate(;)

@@ -21,6 +21,8 @@ char safe_write(int fd, void* buf, size_t len, void (*error_handler) (const char
         error_handler("Memory allocation failed");\
         if (!(field)) return 0;\
         if (!safe_read(fd, (field), struct_size * (count_field), error_handler)) return 0;\
+    } else {\
+        field = NULL;\
     }\
 }
 
@@ -62,7 +64,7 @@ _if(body, {\
 #define _SLZ_SERIALIZER_WRITER(type_name, func_name, error_handler, raw, body, ...) char func_name(int fd, type_name* value)\
 _if(body, {\
     const char* context = "write";\
-    _SLZ_SERIALIZER_WRITER_IMPL(type_name, value, error_handler, raw)\
+    _SLZ_SERIALIZER_WRITER_IMPL(type_name, value, error_handler, raw, __VA_ARGS__)\
     return 1;\
 });
 

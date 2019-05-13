@@ -19,8 +19,12 @@ _SLZ_SERIALIZER_RAW(NetFsOperation, slz_NetFsOperation, {
     }
 })
 
-_SLZ_SERIALIZER(FsOpRead_args, slz_FsOpRead, catch, _SLZ_ARRAY(path.string, path.length, char, catch))
-_SLZ_SERIALIZER(FsOpWrite_args, slz_FsOpWrite, catch, _SLZ_ARRAY(path.string, path.length, char, catch))
+_SLZ_SERIALIZER(FsOpRead_args, slz_FsOpRead, catch,
+        _SLZ_ARRAY(path.string, path.length, char, catch))
+_SLZ_SERIALIZER(FsOpWrite_args, slz_FsOpWrite, catch,
+        _SLZ_ARRAY(path.string, path.length, char, catch)
+        _SLZ_ARRAY(data, length, char, catch))
+
 _SLZ_SERIALIZER(FsOpCreate_args, slz_FsOpCreate, catch, _SLZ_ARRAY(path.string, path.length, char, catch))
 _SLZ_SERIALIZER(FsOpRemove_args, slz_FsOpRemove, catch, _SLZ_ARRAY(path.string, path.length, char, catch))
 _SLZ_SERIALIZER(FsOpStat_args, slz_FsOpStat, catch, _SLZ_ARRAY(path.string, path.length, char, catch))

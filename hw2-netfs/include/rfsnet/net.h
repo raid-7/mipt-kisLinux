@@ -30,11 +30,14 @@ enum FsOpType {
 typedef struct FsOpRead {
     String path;
     size_t offset;
+    size_t length;
 } FsOpRead_args;
 
 typedef struct FsOpWrite {
     String path;
     size_t offset;
+    size_t length;
+    char* data;
 } FsOpWrite_args;
 
 typedef struct FsOpCreate {

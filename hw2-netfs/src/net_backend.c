@@ -8,21 +8,46 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <syslog.h>
+#include <signal.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <pthread.h>
 
 
-int current_sockd;
+__thread int thread_current_sockd;
 char error_intercepted;
+NetServerDescriptors global_nds;
 void fsop_error(const char* s) {
-    error_intercepted = 1;
-    String str = to_string(s);
-    if (slz_String_write(current_sockd, &str)) {
-        shutdown(current_sockd, SHUT_RDWR);
+    if (!error_intercepted) {
+        error_intercepted = 1;
+        String str = to_string(s);
+        if (!slz_String_write(thread_current_sockd, &str)) {
+            shutdown(thread_current_sockd, SHUT_RDWR);
+        }
+        free_string(str);
     }
-    free_string(str);
+
+    pthread_mutex_unlock(global_nds.mutex);
+    pthread_exit(NULL);
 }
+
+
+// See https://stackoverflow.com/questions/6533373/is-sigsegv-delivered-to-each-thread for more information
+void sighandler(int sigid) {
+    if (thread_current_sockd > 0)
+        close(thread_current_sockd);
+    
+    pthread_mutex_unlock(global_nds.mutex);
+    pthread_exit(NULL);
+}
+
+void setup_sigsegv_catcher() {
+    struct sigaction act;
+    memset(&act, 0, sizeof(struct sigaction));
+    act.sa_handler = sighandler;
+    sigaction(SIGSEGV, NULL, &act);
+}
+
 
 
 NetServerDescriptors initialize_server(int port) {
@@ -73,7 +98,6 @@ bool serve_next_operation(struct ServeClientRequest* req) {
     }
 
     pthread_mutex_lock(req->mutex);
-    current_sockd = req->sockd;
     error_intercepted = 0;
     intercept_errors(fsop_error);
     process_operation(req->sockd, req->fds, &op);
@@ -86,6 +110,7 @@ bool serve_next_operation(struct ServeClientRequest* req) {
 
 void* serve_client(void* args) {
     struct ServeClientRequest* req = args;
+    thread_current_sockd = req->sockd;
 
     while (serve_next_operation(req));
 
@@ -95,6 +120,9 @@ void* serve_client(void* args) {
 }
 
 void server_listen_connections(NetServerDescriptors nds, FsDescriptors fds) {
+    global_nds = nds;
+    setup_sigsegv_catcher();
+
     listen(nds.sockd, 5);
     die("Socket error");
 

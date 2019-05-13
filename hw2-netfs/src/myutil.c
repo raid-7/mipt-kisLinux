@@ -6,11 +6,19 @@
 #include <string.h>
 #include <syslog.h>
 
-void (*global_interceptor) (const char* );
+#define _FLG_ERRLOG_STDERR 1u
+#define _FLG_ERRLOG_SYSLOG 3u
+
+void (*global_interceptor) (const char*);
+unsigned char error_logging_flags = _FLG_ERRLOG_STDERR | _FLG_ERRLOG_SYSLOG;
 
 void die(const char* string) {
 	if (errno) {
-		syslog(LOG_ERR, "%s: %m", string);
+	    if (error_logging_flags & _FLG_ERRLOG_SYSLOG)
+		    syslog(LOG_ERR, "%s: %m", string);
+	    if (error_logging_flags & _FLG_ERRLOG_STDERR)
+	        perror(string);
+
 		if (global_interceptor) {
 		    const char* err_str = strerror(errno);
 		    size_t len = strlen(err_str) + strlen(string) + 2;
@@ -19,14 +27,19 @@ void die(const char* string) {
 		        exit(1);
 		    sprintf(full_str, "%s: %s", string, err_str);
 		    global_interceptor(full_str);
-		    free(full_str);
+            free(full_str);
+            errno = 0;
 		} else
 		    exit(1);
 	}
 }
 
 void die_fatal(const char* string) {
-	syslog(LOG_ERR, "%s\n", string);
+    if (error_logging_flags & _FLG_ERRLOG_SYSLOG)
+	    syslog(LOG_ERR, "%s\n", string);
+    if (error_logging_flags & _FLG_ERRLOG_STDERR)
+        fprintf(stderr, "%s\n", string);
+
 	if (global_interceptor) {
 	    global_interceptor(string);
 	} else
@@ -35,7 +48,11 @@ void die_fatal(const char* string) {
 
 char warn(const char* string) {
     if (errno) {
-        syslog(LOG_WARNING, "%s: %m", string);
+        if (error_logging_flags & _FLG_ERRLOG_SYSLOG)
+            syslog(LOG_WARNING, "%s: %m", string);
+        if (error_logging_flags & _FLG_ERRLOG_STDERR)
+            perror(string);
+        
         errno = 0;
         return 1;
     }
@@ -44,6 +61,14 @@ char warn(const char* string) {
 
 void intercept_errors(void (*interceptor) (const char* )) {
     global_interceptor = interceptor;
+}
+
+void configure_error_logging(char to_stderr, char to_syslog) {
+    error_logging_flags = 0;
+    if (to_stderr)
+        error_logging_flags |= _FLG_ERRLOG_STDERR;
+    if (to_syslog)
+        error_logging_flags |= _FLG_ERRLOG_SYSLOG;
 }
 
 size_t get_page_size() {

@@ -25,7 +25,7 @@ void* open_and_map(const char* filename, size_t size) {
 	void* container = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	die("Error occurred while opening file");
 	close(fd);
-	die("Internal error");
+	die("Internal error (open_and_map)");
 	return container;
 }
 
@@ -34,7 +34,7 @@ void mark_block_in_lookup_table(FsDescriptors fs, const size_t block_index, char
 	size_t bit_index = block_index % 8;
 
 	if (block_index >= fs.superblock->blocks_count)
-		die_fatal("Internal error");
+		die_fatal("Internal error (mark_block_in_lookup_table)");
 	if (occupied)
 		fs.lookup_table[byte_index] |= (1 << bit_index);
 	else
@@ -99,7 +99,7 @@ FsDescriptors init_fs(const char* filename, size_t size) {
 	FsDescriptors fs = prepare_descriptors(container, 1);
 	size_t root_inode = init_new_file(fs, FLG_DIRECTORY);
 	if (root_inode != fs.root_inode) {
-		die_fatal("Internal error");
+		die_fatal("Internal error (init_fs)");
 	}
 	return fs;
 }
@@ -131,7 +131,7 @@ INode* get_inode(FsDescriptors fs, const size_t block_index) {
 	if (!block_index)
 		return NULL;
 	if (block_index >= fs.superblock->blocks_count)
-		die_fatal("Internal error");
+		die_fatal("Internal error (get_inode)");
 
 	void* block = fs.container + block_index * fs.superblock->block_size;
 	return (INode*) block;
@@ -337,7 +337,7 @@ DirectoryContent read_directory(FsDescriptors fs, size_t dir_block_index) {
 
 	const size_t cur_dir_size = inode->size;
 	if (cur_dir_size % sizeof(DirectoryItem))
-		die_fatal("Internal error");
+		die_fatal("Internal error (read_directory)");
 
 	void* buffer = malloc(cur_dir_size);
 	read_file(fs, dir_block_index, 0, cur_dir_size, buffer);

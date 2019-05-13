@@ -45,7 +45,6 @@ int initialize_client(const char* address) {
     connect(sockd, (const struct sockaddr*) &addr, sizeof(struct sockaddr_in));
     die("Socket error");
 
-    free(hostent);
     free(host);
 
     return sockd;

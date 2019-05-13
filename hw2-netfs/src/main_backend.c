@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <syslog.h>
 #include <strings.h>
+#include <signal.h>
+#include <pthread.h>
 
 
 const char* HELP_STRING = "Usage:\n./rfsdaemon run <port> <path_to_fs>\n  or\n./rfsdaemon init <path_to_fs> <size>";
@@ -15,7 +17,6 @@ void die_with_help() {
     printf("%s\n", HELP_STRING);
     exit(0);
 }
-
 
 void init(const char* filename, size_t size) {
     FsDescriptors fs = init_fs(filename, size);
@@ -32,9 +33,14 @@ void start_fs_daemon(int port, const char* filename) {
     daemon(0, 0);
     die("Daemonization failed");
 
-    // TODO: setup signal handlers
+    struct sigaction act;
+    memset(&act, 0, sizeof(struct sigaction));
+    act.sa_handler = SIG_IGN;
+    act.sa_flags = 0;
+    sigaction(SIGABRT, NULL, &act);
 
     openlog("rfsdaemon", LOG_PID, LOG_DAEMON);
+    configure_error_logging(0, 1);
 
     server_listen_connections(net, descriptors);
 
@@ -45,10 +51,10 @@ void start_fs_daemon(int port, const char* filename) {
 
 
 int main(int argc, const char* argv[]) {
+    configure_error_logging(1, 0);
+
     if (argc != 4)
         die_with_help();
-
-    openlog(NULL, LOG_PID | LOG_PERROR, LOG_USER);
 
     if (!strcasecmp(argv[1], "init")) {
         unsigned long long size;
