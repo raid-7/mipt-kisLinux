@@ -18,7 +18,7 @@ int phonedir_add_record(struct list_head *list, struct phonedir_record *new_reco
 
 struct directory_entry* phonedir_entry(struct list_head *list_element);
 
-struct list_head phonedir_find(struct list_head *list, const char *surname);
+struct list_head* phonedir_find(struct list_head *list, const char *surname);
 
 void phonedir_del(struct list_head *list, const char *surname);
 

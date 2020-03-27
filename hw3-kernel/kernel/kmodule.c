@@ -6,14 +6,18 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/semaphore.h>
 
 #include "directory.h"
+
+#define __preserve noinline
 
 #define USER_BUF_CAP 1024
 
 MODULE_LICENSE("GPL");
 
 static LIST_HEAD(phone_directory);
+static DEFINE_SEMAPHORE(directory_lock);
 
 static const char* dev_name = "directory_kmodule";
 static int dev_major_num;
@@ -33,10 +37,11 @@ struct user_handle {
 static struct user_handle* handle_alloc(void) {
     struct user_handle* handle = kzalloc(sizeof(struct user_handle), GFP_KERNEL);
     handle->lock = __SPIN_LOCK_UNLOCKED(handle->lock);
+    INIT_LIST_HEAD(&handle->pending_output_head);
     return handle;
 }
 
-static ssize_t process_operation(char* buf, size_t len, struct user_handle *handle) {
+static __preserve ssize_t process_operation(char* buf, size_t len, struct user_handle *handle) {
     size_t rec_size = sizeof(struct phonedir_record);
 
     char op = buf[0];
@@ -61,18 +66,26 @@ static ssize_t process_operation(char* buf, size_t len, struct user_handle *hand
         if (op == PHONEDIR_DELETE) {
             phonedir_del(&phone_directory, surname);
         } else {
-            struct list_head found = phonedir_find(&phone_directory, surname);
-            list_splice_tail(&found, &handle->pending_output_head);
+            struct list_head* found = phonedir_find(&phone_directory, surname);
+            if (!found) {
+                return -ENOMEM;
+            }
+
+            list_splice_tail(found, &handle->pending_output_head);
+            kfree(found);
         }
     }
 
     return need_bytes + 1;
 }
 
-static int handle_process_input_buffers(struct user_handle* handle) {
+static __preserve int handle_process_input_buffers(struct user_handle* handle) {
     int retval = 0;
     size_t l_index = 0;
     size_t r_index = handle->input_offset;
+
+    printk(KERN_INFO "process input buffers: %lu %lu", l_index, r_index);
+
     while (l_index < r_index) {
         ssize_t n_processed = process_operation(handle->input_buf + l_index, r_index - l_index, handle);
         if (n_processed < 0) {
@@ -93,7 +106,9 @@ static int handle_process_input_buffers(struct user_handle* handle) {
         return retval;
 }
 
-static int handle_process_output_buffers(struct user_handle* handle) {
+static __preserve int handle_process_output_buffers(struct user_handle* handle) {
+    printk(KERN_INFO "process output buffers: %d", list_empty(&handle->pending_output_head) ? 0 : 1);
+
     if (!list_empty(&handle->pending_output_head)) {
         struct directory_entry *cursor, *n;
         size_t i = handle->output_offset;
@@ -113,9 +128,11 @@ static int handle_process_output_buffers(struct user_handle* handle) {
     return 0;
 }
 
-static int handle_process_buffers(struct user_handle* handle) {
+static __preserve int handle_process_buffers(struct user_handle* handle) {
     printk(KERN_INFO "offsets: %lld %lld", handle->input_offset, handle->output_offset);
-    // TODO: take global lock
+    if (down_interruptible(&directory_lock)) {
+        return -EINTR;
+    }
 
     int ret_in = handle_process_input_buffers(handle);
     int ret_out = handle_process_output_buffers(handle);
@@ -127,6 +144,7 @@ static int handle_process_buffers(struct user_handle* handle) {
         printk(KERN_ALERT "handle_process_output_buffers: %d", ret_out);
     }
 
+    up(&directory_lock);
     return ret_in != 0 ? ret_in : ret_out;
 }
 
@@ -162,8 +180,6 @@ static ssize_t dev_read(struct file *file, char __user *data, size_t len, loff_t
     }
     retval = copied;
 
-    printk(KERN_INFO "User read %lu bytes", copied);
-
     ret:
         spin_unlock(&handle->lock);
         return retval;
@@ -196,9 +212,6 @@ static ssize_t dev_write(struct file *file, const char __user *data, size_t len,
 
     handle->input_offset += copied;
     retval = copied;
-
-    printk(KERN_INFO "User wrote %lu bytes", copied);
-
 
     ret:
         spin_unlock(&handle->lock);

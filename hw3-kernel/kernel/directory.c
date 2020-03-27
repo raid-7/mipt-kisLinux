@@ -35,8 +35,14 @@ struct directory_entry* phonedir_entry(struct list_head *list_element) {
     return list_entry(list_element, struct directory_entry, list);
 }
 
-struct list_head phonedir_find(struct list_head *list, const char *surname) {
-    struct list_head result;
+struct list_head* phonedir_find(struct list_head *list, const char *surname) {
+    struct list_head *result = kmalloc(sizeof(struct list_head), GFP_KERNEL);
+    if (!result) {
+        return result;
+    }
+
+    INIT_LIST_HEAD(result);
+
     struct directory_entry *cursor;
     list_for_each_entry(cursor, list, list) {
         if (strcmp(surname, cursor->record.surname) == 0) {
@@ -45,9 +51,10 @@ struct list_head phonedir_find(struct list_head *list, const char *surname) {
                 continue;
 
             memcpy(&pointer->record, &cursor->record, sizeof(struct phonedir_record));
-            list_add(&pointer->list, &result);
+            list_add(&pointer->list, result);
         }
     }
+
     return result;
 }
 

@@ -1,12 +1,70 @@
 #include <iostream>
-#include <fstream>
 #include <stdexcept>
+#include <utility>
 
 extern "C" {
 #include "../kernel/phonedir.h"
 }
 
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
 #include "CLI11.hpp"
+
+class CError : public std::runtime_error {
+public:
+    explicit CError(const std::string& prefix)
+            : runtime_error(prefix + ": " + strerror(errno)) {
+        errno = 0;
+    }
+};
+
+class Deferred {
+private:
+    std::function<void(void)> func;
+
+public:
+    template <class T>
+    Deferred(const T& mfunc) : func(mfunc) {}
+
+    ~Deferred() {
+        func();
+    }
+};
+
+#define defer(a) const Deferred a =
+
+void write_all(int fd, const char* buf, size_t len) {
+    ssize_t done;
+    while (len > 0 && (done = write(fd, buf, len)) >= 0) {
+        len -= done;
+        buf += done;
+    }
+    if (done < 0) {
+        throw CError("Write failed");
+    }
+}
+
+bool read_quant(int fd, char* buf, size_t len) {
+    ssize_t done;
+    bool iterated = false;
+    while (len > 0 && (done = read(fd, buf, len)) > 0) {
+        len -= done;
+        buf += done;
+        iterated = true;
+    }
+    if (done < 0) {
+        throw CError("Read failed");
+    }
+    if (iterated && len) {
+        throw std::runtime_error("Cannot read whole quant");
+    }
+    return len == 0;
+}
 
 std::ostream& operator<<(std::ostream& stream, const phonedir_record& record) {
     stream << record.surname << ' ' << record.name << ' ' << record.phone << ' ' << record.email << ' ' << record.age;
@@ -30,7 +88,7 @@ void copy_normalized(const std::string& from, char* to, size_t maxlen) {
     std::fill(to + from.size(), to + maxlen, '\0');
 }
 
-void preform_add(std::fstream& stream, const std::string& surname, const std::string& name,
+void preform_add(int fd, const std::string& surname, const std::string& name,
                  const std::string& phone, const std::string& email, unsigned int age) {
     phonedir_record record{};
     copy_normalized(surname, record.surname, PHONEDIR_NAME_LEN);
@@ -39,42 +97,37 @@ void preform_add(std::fstream& stream, const std::string& surname, const std::st
     copy_normalized(phone, record.phone, PHONEDIR_PHONE_LEN);
     record.age = age;
 
-    std::string payload(reinterpret_cast<char*>(&record), sizeof(record));
-    stream << static_cast<char>(PHONEDIR_ADD) << payload;
-    stream.flush();
+    auto payload = static_cast<char>(PHONEDIR_ADD) + std::string(reinterpret_cast<char*>(&record), sizeof(record));
+    write_all(fd, payload.data(), payload.size());
 }
 
-void preform_search(std::fstream& stream, const std::string& surname) {
+void preform_search(int fd, const std::string& surname) {
     auto data = surname_to_op_string(surname);
     data[0] = PHONEDIR_FIND;
-    stream << data;
-    stream.flush();
+    write_all(fd, data.data(), data.size());
 
     phonedir_record record{};
     char* record_ptr = reinterpret_cast<char*>(&record);
-    std::streamsize read;
-    while ((read = stream.readsome(record_ptr, sizeof(record))) == sizeof(record)) {
+    while (read_quant(fd, record_ptr, sizeof(phonedir_record))) {
         std::cout << record << std::endl;
-    }
-    if (read) {
-        throw std::runtime_error("Strange results...");
     }
 }
 
-void perform_delete(std::fstream& stream, std::string surname) {
+void perform_delete(int fd, std::string surname) {
     auto data = surname_to_op_string(surname);
     data[0] = PHONEDIR_DELETE;
-    stream << data;
-    stream.flush();
+    write_all(fd, data.data(), data.size());
 }
 
 int main(int argc, const char* argv[]) {
-    std::fstream stream;
-
+    int fd = -1;
     CLI::App app{"Phonedir client"};
 
-    app.add_option_function<std::string>("-d", [&stream](const std::string& dname) mutable {
-        stream = std::fstream(dname);
+    app.add_option_function<std::string>("-d", [&fd](const std::string& dname) mutable {
+        fd = open(dname.c_str(), O_RDWR);
+        if (fd == -1) {
+            throw CError("Cannot open device");
+        }
     }, "Device name")->required();
 
     CLI::App* add_sbc = app.add_subcommand("add");
@@ -93,14 +146,14 @@ int main(int argc, const char* argv[]) {
     find_sbc->add_option("surname", surname)->required();
     del_sbc->add_option("surname", surname)->required();
 
-    add_sbc->callback([&] {
-        preform_add(stream, name, surname, phone, email, age);
+    add_sbc->callback([&fd, &surname, &name, &phone, &email, &age] {
+        preform_add(fd, surname, name, phone, email, age);
     });
-    find_sbc->callback([&] {
-        preform_search(stream, surname);
+    find_sbc->callback([&fd, &surname] {
+        preform_search(fd, surname);
     });
-    del_sbc->callback([&] {
-        perform_delete(stream, surname);
+    del_sbc->callback([&fd, &surname] {
+        perform_delete(fd, surname);
     });
 
     app.require_subcommand();
