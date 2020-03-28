@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/semaphore.h>
+#include <linux/sysext.h>
 
 #include "directory.h"
 
@@ -19,7 +20,7 @@ MODULE_LICENSE("GPL");
 static LIST_HEAD(phone_directory);
 static DEFINE_SEMAPHORE(directory_lock);
 
-static const char* dev_name = "directory_kmodule";
+static const char* device_name = "directory_kmodule";
 static int dev_major_num;
 
 
@@ -84,7 +85,7 @@ static __preserve int handle_process_input_buffers(struct user_handle* handle) {
     size_t l_index = 0;
     size_t r_index = handle->input_offset;
 
-    printk(KERN_INFO "process input buffers: %lu %lu", l_index, r_index);
+    printk(KERN_INFO "directory_kmodule: process input buffers: %lu %lu\n", l_index, r_index);
 
     while (l_index < r_index) {
         ssize_t n_processed = process_operation(handle->input_buf + l_index, r_index - l_index, handle);
@@ -107,7 +108,7 @@ static __preserve int handle_process_input_buffers(struct user_handle* handle) {
 }
 
 static __preserve int handle_process_output_buffers(struct user_handle* handle) {
-    printk(KERN_INFO "process output buffers: %d", list_empty(&handle->pending_output_head) ? 0 : 1);
+    printk(KERN_INFO "directory_kmodule: process output buffers: %d\n", list_empty(&handle->pending_output_head) ? 0 : 1);
 
     if (!list_empty(&handle->pending_output_head)) {
         struct directory_entry *cursor, *n;
@@ -129,7 +130,6 @@ static __preserve int handle_process_output_buffers(struct user_handle* handle) 
 }
 
 static __preserve int handle_process_buffers(struct user_handle* handle) {
-    printk(KERN_INFO "offsets: %lld %lld", handle->input_offset, handle->output_offset);
     if (down_interruptible(&directory_lock)) {
         return -EINTR;
     }
@@ -138,10 +138,10 @@ static __preserve int handle_process_buffers(struct user_handle* handle) {
     int ret_out = handle_process_output_buffers(handle);
 
     if (ret_in != 0) {
-        printk(KERN_ALERT "handle_process_input_buffers: %d", ret_in);
+        printk(KERN_ALERT "directory_kmodule: handle_process_input_buffers: %d\n", ret_in);
     }
     if (ret_out != 0) {
-        printk(KERN_ALERT "handle_process_output_buffers: %d", ret_out);
+        printk(KERN_ALERT "directory_kmodule: handle_process_output_buffers: %d\n", ret_out);
     }
 
     up(&directory_lock);
@@ -244,20 +244,146 @@ static struct file_operations dev_ops = {
     .release = dev_release
 };
 
+static char* surname_from_user(void* ptr, unsigned int len, long* retval) {
+    if (len >= PHONEDIR_NAME_LEN || len == 0) {
+        *retval = -EINVAL;
+        return NULL;
+    }
+
+    char* surname = kmalloc(len + 1, GFP_KERNEL);
+    if (!surname) {
+        *retval = -ENOMEM;
+        return NULL;
+    }
+
+    if (copy_from_user(surname, ptr, len)) {
+        *retval = -EFAULT;
+        kfree(surname);
+        return NULL;
+    }
+    surname[len] = 0;
+
+    *retval = 0;
+    return surname;
+}
+
+static long sys_add(void *ptr) {
+    printk(KERN_INFO "directory_kmodule: sys_add\n");
+
+    size_t rec_size = sizeof(struct phonedir_record);
+    struct phonedir_record *record = kmalloc(rec_size, GFP_KERNEL);
+    if (!record) {
+        return -ENOMEM;
+    }
+
+    long retval = 0;
+    if (copy_from_user(record, ptr, rec_size)) {
+        retval = -EFAULT;
+        goto ret;
+    }
+
+    if (down_interruptible(&directory_lock)) {
+        retval = -EINTR;
+        goto ret;
+    }
+    retval = phonedir_add_record(&phone_directory, record);
+    up(&directory_lock);
+
+    ret:
+        kfree(record);
+        return retval;
+}
+
+static long sys_del(void *ptr, unsigned int len) {
+    printk(KERN_INFO "directory_kmodule: sys_del\n");
+
+    long retval = 0;
+    char* surname = surname_from_user(ptr, len, &retval);
+    if (!surname) {
+        return retval;
+    }
+
+    if (down_interruptible(&directory_lock)) {
+        retval = -EINTR;
+        goto ret;
+    }
+    phonedir_del(&phone_directory, surname);
+    up(&directory_lock);
+
+    ret:
+        kfree(surname);
+        return retval;
+}
+
+static long sys_find(void *ptr0, unsigned int len, void *ptr1) {
+    printk(KERN_INFO "directory_kmodule: sys_find\n");
+
+    long retval = 0;
+    struct list_head* found = NULL;
+    char* surname = surname_from_user(ptr0, len, &retval);
+    if (!surname) {
+        return retval;
+    }
+
+    if (down_interruptible(&directory_lock)) {
+        retval = -EINTR;
+        goto ret;
+    }
+
+    found = phonedir_find(&phone_directory, surname);
+    if (!found) {
+        retval = -ENOMEM;
+        goto ret_unlock;
+    }
+
+    if (list_empty(found)) {
+        retval = 0;
+        goto ret_unlock;
+    }
+
+    struct directory_entry *first_entry = list_first_entry(found, struct directory_entry, list);
+    if (copy_to_user(ptr1, &first_entry->record, sizeof(struct phonedir_record))) {
+        retval = -EFAULT;
+        goto ret_unlock;
+    }
+    retval = 1;
+
+    ret_unlock:
+        up(&directory_lock);
+    ret:
+        if (found) {
+            phonedir_free(found);
+            kfree(found);
+        }
+        kfree(surname);
+        return retval;
+}
+
+static struct module_sys_descritor sys_ops = {
+    .sys_ptr = sys_add,
+    .sys_ptr_uint = sys_del,
+    .sys_ptr_uint_ptr = sys_find
+};
+
 
 static int __init first_module_init(void) {
-    printk(KERN_INFO "Init directory module\n");
-    dev_major_num = register_chrdev(0, dev_name, &dev_ops);
+    printk(KERN_INFO "directory_kmodule: init\n");
+    dev_major_num = register_chrdev(0, device_name, &dev_ops);
     if (dev_major_num < 0) {
-        printk(KERN_ALERT "Cannot register device\n");
+        printk(KERN_ALERT "directory_kmodule: cannot register device\n");
         return dev_major_num;
     }
+
+    memcpy(sys_ops.mod_name, THIS_MODULE->name, MODULE_NAME_LEN);
+    module_sys_publish(&sys_ops);
+
     return 0;
 }
 
 static void __exit first_module_exit(void) {
-    printk(KERN_INFO "Exit directory module\n");
-    unregister_chrdev(dev_major_num, dev_name);
+    printk(KERN_INFO "directory_kmodule: exit\n");
+    unregister_chrdev(dev_major_num, device_name);
+    module_sys_retract();
     phonedir_free(&phone_directory);
 }
 
