@@ -7,9 +7,6 @@ extern "C" {
 #include "calls.h"
 }
 
-#include <unistd.h>
-#include <sys/types.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <string.h>
 
